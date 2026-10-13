@@ -1,0 +1,38 @@
+name: 'Polar.sh File Upload'
+description: 'Upload release archives to Polar.sh and attach them to digital download benefits'
+author: '@billythakidd04'
+
+inputs:
+  access-token:
+    description: 'Polar Organization Access Token (OAT)'
+    required: true
+  file-path:
+    description: 'Path to the local release archive or file to upload'
+    required: true
+  organization-id:
+    description: 'Polar organization ID (auto-resolved from token if omitted)'
+    required: false
+  benefit-id:
+    description: 'Polar downloadables benefit ID to attach this file to'
+    required: false
+  file-name:
+    description: 'Display name for the uploaded file on Polar (defaults to file basename)'
+    required: false
+  mime-type:
+    description: 'MIME type of the file (defaults to application/zip)'
+    required: false
+    default: 'application/zip'
+
+outputs:
+  file-id:
+    description: 'Polar internal file ID'
+  file-path:
+    description: 'Polar internal storage path of the file'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'package'
+  color: 'blue'

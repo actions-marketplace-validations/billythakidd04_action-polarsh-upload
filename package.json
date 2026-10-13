@@ -1,0 +1,36 @@
+{
+  "name": "action-polarsh-upload",
+  "version": "0.0.0-development",
+  "description": "GitHub Action to upload release archives to Polar.sh and attach them to download benefits",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "actions",
+    "github",
+    "polar",
+    "polar.sh",
+    "release",
+    "upload"
+  ],
+  "author": "@billythakidd04",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.13.10",
+    "@typescript-eslint/eslint-plugin": "^8.26.0",
+    "@typescript-eslint/parser": "^8.26.0",
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.21.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.6",
+    "typescript": "^5.8.2"
+  }
+}

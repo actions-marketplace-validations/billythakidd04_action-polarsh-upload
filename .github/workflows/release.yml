@@ -1,0 +1,119 @@
+name: Release Action
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version tag (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Release Tag
+        id: release_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 📦 Release Action: \`${TAG}\`"
+            echo "- **Trigger**: \`${{ github.event_name }}\`"
+            echo "- **Commit**: \`${{ github.sha }}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Tests
+        run: |
+          if npm test; then
+            echo "### ✅ Unit Tests: Passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ❌ Unit Tests: Failed"
+              echo "> Check Jest test logs for assertion errors."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Synchronize Package Version
+        run: |
+          TAG="${{ steps.release_version.outputs.tag }}"
+          CLEAN_VERSION="${TAG#v}"
+          npm version "$CLEAN_VERSION" --no-git-tag-version --allow-same-version
+          echo "### 🏷️ Package Version Set: \`${CLEAN_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build Distribution Bundle
+        run: npm run build
+
+      - name: Verify Bundle Cleanliness
+        run: |
+          if [ -n "$(git status --porcelain dist/)" ]; then
+            {
+              echo "### ❌ Distribution Verification: Failed"
+              echo "> 'dist/' bundle is out of sync with 'src/'. Run 'npm run build' before releasing."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "### ✅ Distribution Verification: Up to date" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish GitHub Release
+        id: gh_release
+        uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
+        with:
+          tag_name: ${{ steps.release_version.outputs.tag }}
+          name: Release ${{ steps.release_version.outputs.tag }}
+          generate_release_notes: true
+
+      - name: Update Floating Major Version Tag
+        run: |
+          TAG="${{ steps.release_version.outputs.tag }}"
+          MAJOR_TAG=$(echo "$TAG" | cut -d. -f1)
+          if [ -n "$MAJOR_TAG" ] && [ "$MAJOR_TAG" != "$TAG" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -fa "$MAJOR_TAG" -m "Update ${MAJOR_TAG} to ${TAG}"
+            git push origin "$MAJOR_TAG" --force
+            echo "### 🏷️ Floating Tag Updated: \`${MAJOR_TAG}\` -> \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Summarize GitHub Release
+        if: always() && steps.gh_release.outcome != 'skipped'
+        run: |
+          if [ "${{ steps.gh_release.outcome }}" = "success" ]; then
+            {
+              echo "### 🚀 GitHub Release: Published successfully"
+              echo "- Tag: \`${{ steps.release_version.outputs.tag }}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ❌ GitHub Release: Failed"
+              echo "> Check runner logs for details."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
     "test": "jest",
+    "test:local": "node dist/index.js",
     "lint": "eslint src/**/*.ts",
     "prepare": "npm run build"
   },

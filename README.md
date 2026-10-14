@@ -4,7 +4,7 @@ A standalone GitHub Action to upload release archives to Polar.sh and automatica
 
 ## Features
 
-- **Automated S3 Multipart Upload**: Registers the file record with Polar.sh, streams binary chunks to presigned S3 URLs, and finalizes the upload.
+- **Automated Multipart Upload**: Registers the file record with Polar.sh, streams binary chunks directly to Polar's secure storage backend, and finalizes the upload.
 - **Benefit Linking**: Automatically links uploaded release files to target digital download benefits (`type: downloadables`).
 - **Organization Auto-Discovery**: Automatically resolves your default Polar organization ID from your Organization Access Token if omitted.
 - **Immediate Step Summaries**: Writes markdown summaries directly to `$GITHUB_STEP_SUMMARY`.
@@ -32,6 +32,19 @@ A standalone GitHub Action to upload release archives to Polar.sh and automatica
 | `benefit-id` | Polar downloadables benefit ID to link the file | No | |
 | `file-name` | Custom display file name on Polar | No | Basename of `file-path` |
 | `mime-type` | MIME type of the file | No | `application/zip` |
+| `server` | Polar API environment (`production` or `sandbox`) | No | `production` |
+| `api-base` | Custom Polar API base URL | No | Resolved from `server` |
+
+## Required Token Scopes
+
+When creating an Organization Access Token (OAT) in Polar (**Settings > Developers > New Token**), configure the following permissions:
+
+| Scope | Read | Write | Notes |
+| :--- | :--- | :--- | :--- |
+| `organizations` | Required | Optional | `organizations:read` is required to resolve organization ID automatically. |
+| `files` | Required | Required | Both are required to create, upload, and finalize release files. |
+| `benefits` | Optional | Optional | Required only when `benefit-id` is provided to attach release files. |
+| `products` | Optional | Optional | Required only for automated product catalog lookups or programmatic creation. |
 
 ## Outputs
 
@@ -51,6 +64,9 @@ npm test
 
 # Build bundled action distribution
 npm run build
+
+# Test locally using .env credentials
+npm run test:local
 ```
 
 ## License

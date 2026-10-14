@@ -27592,19 +27592,33 @@ __nccwpck_require__.r(__webpack_exports__);
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
   formatBytes: () => (/* binding */ formatBytes),
+  getActionInput: () => (/* binding */ getActionInput),
+  loadEnvFile: () => (/* binding */ loadEnvFile),
   run: () => (/* binding */ run)
 });
 
 // EXTERNAL MODULE: ./node_modules/@actions/core/lib/core.js
 var core = __nccwpck_require__(7484);
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = require("node:fs");
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = require("node:path");
 ;// CONCATENATED MODULE: ./src/polar.ts
-const POLAR_API_BASE = 'https://api.polar.sh/v1';
+const POLAR_API_PRODUCTION = 'https://api.polar.sh/v1';
+const POLAR_API_SANDBOX = 'https://sandbox-api.polar.sh/v1';
+function resolveApiBase(options) {
+    if (options?.apiBase && options.apiBase.trim().length > 0) {
+        return options.apiBase.trim().replace(/\/+$/, '');
+    }
+    if (options?.server?.trim().toLowerCase() === 'sandbox') {
+        return POLAR_API_SANDBOX;
+    }
+    return POLAR_API_PRODUCTION;
+}
 async function resolveOrganizationId(options) {
-    const { accessToken, apiBase = POLAR_API_BASE } = options;
+    const { accessToken, apiBase = POLAR_API_PRODUCTION } = options;
     const endpoint = `${apiBase}/organizations`;
     const response = await fetch(endpoint, {
         method: 'GET',
@@ -27625,24 +27639,29 @@ async function resolveOrganizationId(options) {
     return orgs[0].id;
 }
 async function createFile(options) {
-    const { accessToken, organizationId, fileName, fileSize, mimeType = 'application/zip', apiBase = POLAR_API_BASE } = options;
+    const { accessToken, organizationId, fileName, fileSize, mimeType = 'application/zip', apiBase = POLAR_API_PRODUCTION, sha256Base64 } = options;
     const endpoint = `${apiBase}/files`;
+    const part = {
+        number: 1,
+        chunk_start: 0,
+        chunk_end: fileSize
+    };
+    if (sha256Base64) {
+        part.checksum_sha256_base64 = sha256Base64;
+    }
     const body = {
-        organization_id: organizationId,
         name: fileName,
         mime_type: mimeType,
         size: fileSize,
         service: 'downloadable',
         upload: {
-            parts: [
-                {
-                    number: 1,
-                    chunk_start: 0,
-                    chunk_end: fileSize
-                }
-            ]
+            parts: [part]
         }
     };
+    // Polar API rejects organization_id when an Organization Access Token (polar_oat_*) is used.
+    if (organizationId && !accessToken.startsWith('polar_oat_')) {
+        body.organization_id = organizationId;
+    }
     const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -27659,9 +27678,10 @@ async function createFile(options) {
     return (await response.json());
 }
 async function uploadPart(options) {
-    const { presignedUrl, partNumber, buffer } = options;
+    const { presignedUrl, partNumber, buffer, headers = {}, sha256Base64 } = options;
     const response = await fetch(presignedUrl, {
         method: 'PUT',
+        headers,
         body: buffer
     });
     if (!response.ok) {
@@ -27669,17 +27689,20 @@ async function uploadPart(options) {
         throw new Error(`Polar chunk upload failed for part ${partNumber} (HTTP ${response.status}): ${errorText}`);
     }
     const rawEtag = response.headers.get('etag') || response.headers.get('ETag') || `"${partNumber}"`;
-    const cleanEtag = rawEtag.replace(/^"+|"+$/g, '');
-    return {
+    const completed = {
         number: partNumber,
-        checksum_etag: cleanEtag
+        checksum_etag: rawEtag
     };
+    if (sha256Base64) {
+        completed.checksum_sha256_base64 = sha256Base64;
+    }
+    return completed;
 }
 async function completeFileUpload(options) {
-    const { accessToken, fileId, filePath, parts, apiBase = POLAR_API_BASE } = options;
+    const { accessToken, fileId, uploadId, filePath, parts, apiBase = POLAR_API_PRODUCTION } = options;
     const endpoint = `${apiBase}/files/${encodeURIComponent(fileId)}/uploaded`;
     const body = {
-        id: fileId,
+        id: uploadId,
         path: filePath,
         parts
     };
@@ -27699,7 +27722,7 @@ async function completeFileUpload(options) {
     return (await response.json());
 }
 async function attachFileToBenefit(options) {
-    const { accessToken, benefitId, fileId, apiBase = POLAR_API_BASE } = options;
+    const { accessToken, benefitId, fileId, apiBase = POLAR_API_PRODUCTION } = options;
     // 1. Fetch current benefit to retain existing attached files
     const getEndpoint = `${apiBase}/benefits/${encodeURIComponent(benefitId)}`;
     const getRes = await fetch(getEndpoint, {
@@ -27745,6 +27768,7 @@ async function attachFileToBenefit(options) {
 
 
 
+
 function formatBytes(bytes) {
     if (bytes === 0)
         return '0 B';
@@ -27753,17 +27777,74 @@ function formatBytes(bytes) {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
+function loadEnvFile(envPath = '.env') {
+    if (process.env.NODE_ENV === 'test' && envPath === '.env')
+        return;
+    const resolved = external_node_path_namespaceObject.resolve(envPath);
+    if (!external_node_fs_namespaceObject.existsSync(resolved))
+        return;
+    const content = external_node_fs_namespaceObject.readFileSync(resolved, 'utf-8');
+    for (const rawLine of content.split('\n')) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#'))
+            continue;
+        const eqIdx = line.indexOf('=');
+        if (eqIdx === -1)
+            continue;
+        const key = line.slice(0, eqIdx).trim();
+        let val = line.slice(eqIdx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+        }
+        if (!(key in process.env)) {
+            process.env[key] = val;
+        }
+    }
+}
+function getActionInput(name, options) {
+    const fromCore = core.getInput(name);
+    if (fromCore)
+        return fromCore;
+    const envKey = `INPUT_${name.replace(/[-\s]/g, '_').toUpperCase()}`;
+    if (process.env[envKey])
+        return process.env[envKey].trim();
+    const aliasMap = {
+        'access-token': ['POLAR_ACCESS_TOKEN', 'POLAR_TOKEN'],
+        'file-path': ['FILE_PATH', 'POLAR_FILE_PATH'],
+        'benefit-id': ['POLAR_BENEFIT_ID'],
+        'organization-id': ['POLAR_ORGANIZATION_ID'],
+        'file-name': ['FILE_NAME', 'POLAR_FILE_NAME'],
+        'mime-type': ['MIME_TYPE', 'POLAR_MIME_TYPE'],
+        'server': ['POLAR_SERVER'],
+        'api-base': ['POLAR_API_BASE']
+    };
+    const aliases = aliasMap[name] || [];
+    for (const alias of aliases) {
+        if (process.env[alias]) {
+            return process.env[alias].trim();
+        }
+    }
+    if (options?.required) {
+        throw new Error(`Input required and not supplied: ${name}`);
+    }
+    return '';
+}
 async function run() {
+    loadEnvFile();
     let fileName = '';
     let organizationId = '';
     let benefitId = '';
     try {
-        const accessToken = core.getInput('access-token', { required: true });
-        const filePath = core.getInput('file-path', { required: true });
-        organizationId = core.getInput('organization-id');
-        benefitId = core.getInput('benefit-id');
-        const customFileName = core.getInput('file-name');
-        const mimeType = core.getInput('mime-type') || 'application/zip';
+        const accessToken = getActionInput('access-token', { required: true });
+        const filePath = getActionInput('file-path', { required: true });
+        organizationId = getActionInput('organization-id');
+        benefitId = getActionInput('benefit-id');
+        const customFileName = getActionInput('file-name');
+        const mimeType = getActionInput('mime-type') || 'application/zip';
+        const server = getActionInput('server') || 'production';
+        const customApiBase = getActionInput('api-base');
+        const apiBase = resolveApiBase({ server, apiBase: customApiBase });
         const resolvedPath = external_node_path_namespaceObject.resolve(filePath);
         if (!external_node_fs_namespaceObject.existsSync(resolvedPath)) {
             throw new Error(`Specified file-path does not exist: ${resolvedPath}`);
@@ -27775,23 +27856,29 @@ async function run() {
         const fileSize = stats.size;
         fileName = customFileName || external_node_path_namespaceObject.basename(resolvedPath);
         core.info(`Preparing Polar.sh upload for file: ${fileName} (${formatBytes(fileSize)})`);
+        core.info(`Target Polar API base: ${apiBase}`);
         // Step 1: Resolve organization ID if not explicitly provided
         if (!organizationId) {
             core.info('Resolving default Polar organization from access token...');
-            organizationId = await resolveOrganizationId({ accessToken });
+            organizationId = await resolveOrganizationId({ accessToken, apiBase });
             core.info(`Resolved Polar organization ID: ${organizationId}`);
         }
         else {
             core.info(`Target Polar organization ID: ${organizationId}`);
         }
         // Step 2: Initialize downloadable file and obtain presigned upload parts
+        core.info('Computing file SHA-256 integrity checksum...');
+        const fileBuffer = external_node_fs_namespaceObject.readFileSync(resolvedPath);
+        const sha256Base64 = external_node_crypto_.createHash('sha256').update(fileBuffer).digest('base64');
         core.info('Creating downloadable file record on Polar.sh...');
         const createdFile = await createFile({
             accessToken,
             organizationId,
             fileName,
             fileSize,
-            mimeType
+            mimeType,
+            apiBase,
+            sha256Base64
         });
         if (!createdFile ||
             !createdFile.id ||
@@ -27801,38 +27888,30 @@ async function run() {
             throw new Error('Polar.sh file creation did not return valid upload credentials or parts.');
         }
         core.info(`File record created. File ID: ${createdFile.id}, Parts: ${createdFile.upload.parts.length}`);
-        // Step 3: Upload chunks to presigned S3 URLs
+        // Step 3: Upload file parts to Polar presigned storage
         const completedParts = [];
-        const fileDescriptor = external_node_fs_namespaceObject.openSync(resolvedPath, 'r');
-        try {
-            const parts = createdFile.upload.parts;
-            const partCount = parts.length;
-            const partSize = Math.ceil(fileSize / partCount);
-            for (let i = 0; i < partCount; i++) {
-                const partInfo = parts[i];
-                const offset = i * partSize;
-                const currentChunkSize = Math.min(partSize, fileSize - offset);
-                core.info(`Uploading part ${partInfo.number}/${partCount} (${formatBytes(currentChunkSize)})...`);
-                const buffer = Buffer.alloc(currentChunkSize);
-                external_node_fs_namespaceObject.readSync(fileDescriptor, buffer, 0, currentChunkSize, offset);
-                const uploadedPart = await uploadPart({
-                    presignedUrl: partInfo.url,
-                    partNumber: partInfo.number,
-                    buffer
-                });
-                completedParts.push(uploadedPart);
-            }
-        }
-        finally {
-            external_node_fs_namespaceObject.closeSync(fileDescriptor);
+        const parts = createdFile.upload.parts;
+        for (let i = 0; i < parts.length; i++) {
+            const partInfo = parts[i];
+            core.info(`Uploading part ${partInfo.number}/${parts.length} to Polar storage...`);
+            const uploadedPart = await uploadPart({
+                presignedUrl: partInfo.url,
+                partNumber: partInfo.number,
+                buffer: fileBuffer,
+                headers: partInfo.headers,
+                sha256Base64
+            });
+            completedParts.push(uploadedPart);
         }
         // Step 4: Finalize file upload
         core.info('Finalizing downloadable file upload on Polar.sh...');
         const finalized = await completeFileUpload({
             accessToken,
             fileId: createdFile.id,
+            uploadId: createdFile.upload.id,
             filePath: createdFile.path,
-            parts: completedParts
+            parts: completedParts,
+            apiBase
         });
         core.info(`File upload finalized. Path: ${finalized.path || createdFile.path}`);
         // Step 5: Attach file to downloadables benefit if benefit-id provided
@@ -27841,7 +27920,8 @@ async function run() {
             await attachFileToBenefit({
                 accessToken,
                 benefitId,
-                fileId: createdFile.id
+                fileId: createdFile.id,
+                apiBase
             });
             core.info(`Successfully linked file to Polar benefit ${benefitId}!`);
         }
@@ -27849,6 +27929,7 @@ async function run() {
         core.setOutput('file-id', createdFile.id);
         core.setOutput('file-path', finalized.path || createdFile.path);
         const summaryItems = [
+            `**Environment / API**: \`${apiBase}\``,
             `**Organization ID**: \`${organizationId}\``,
             `**File**: \`${fileName}\` (${formatBytes(fileSize)})`,
             `**File ID**: \`${createdFile.id}\``,
@@ -27857,8 +27938,10 @@ async function run() {
         if (benefitId) {
             summaryItems.push(`**Linked Benefit ID**: \`${benefitId}\``);
         }
-        core.summary.addHeading('🐻‍❄️ Polar.sh Upload: Successful', 3).addList(summaryItems);
-        await core.summary.write();
+        if (process.env.GITHUB_STEP_SUMMARY) {
+            core.summary.addHeading('🐻‍❄️ Polar.sh Upload: Successful', 3).addList(summaryItems);
+            await core.summary.write();
+        }
         core.info(`Successfully uploaded ${fileName} to Polar.sh!`);
     }
     catch (error) {

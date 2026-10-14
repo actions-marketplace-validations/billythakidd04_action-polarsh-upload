@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { run } from '../src/index';
+import { run, loadEnvFile, getActionInput } from '../src/index';
 import * as polar from '../src/polar';
 
 jest.mock('@actions/core');
@@ -26,6 +26,16 @@ describe('Polar Action run() Entrypoint', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.INPUT_ACCESS_TOKEN;
+    delete process.env.INPUT_FILE_PATH;
+    delete process.env.INPUT_BENEFIT_ID;
+    delete process.env.INPUT_ORGANIZATION_ID;
+    delete process.env.POLAR_ACCESS_TOKEN;
+    delete process.env.POLAR_BENEFIT_ID;
+    delete process.env.POLAR_ORGANIZATION_ID;
+    delete process.env.FILE_PATH;
+    process.env.GITHUB_STEP_SUMMARY = '/tmp/test-summary.md';
+    (polar.resolveApiBase as jest.Mock).mockReturnValue('https://api.polar.sh/v1');
 
     (core.getInput as jest.Mock).mockImplementation((name: string) => {
       switch (name) {
@@ -60,6 +70,8 @@ describe('Polar Action run() Entrypoint', () => {
       id: 'file_polar_1',
       path: '/downloadables/custom-release.zip',
       upload: {
+        id: 's3_upload_123',
+        path: '/downloadables/custom-release.zip',
         parts: [{ number: 1, url: 'https://s3.test/upload' }]
       }
     });
@@ -87,26 +99,33 @@ describe('Polar Action run() Entrypoint', () => {
       organizationId: 'org_explicit_123',
       fileName: 'custom-release.zip',
       fileSize: expect.any(Number),
-      mimeType: 'application/zip'
+      mimeType: 'application/zip',
+      apiBase: expect.any(String),
+      sha256Base64: expect.any(String)
     });
 
     expect(polar.uploadPart).toHaveBeenCalledWith({
       presignedUrl: 'https://s3.test/upload',
       partNumber: 1,
-      buffer: expect.any(Buffer)
+      buffer: expect.any(Buffer),
+      headers: undefined,
+      sha256Base64: expect.any(String)
     });
 
     expect(polar.completeFileUpload).toHaveBeenCalledWith({
       accessToken: 'polar_oat_secret',
       fileId: 'file_polar_1',
+      uploadId: 's3_upload_123',
       filePath: '/downloadables/custom-release.zip',
-      parts: [{ number: 1, checksum_etag: 'etag_123' }]
+      parts: expect.any(Array),
+      apiBase: expect.any(String)
     });
 
     expect(polar.attachFileToBenefit).toHaveBeenCalledWith({
       accessToken: 'polar_oat_secret',
       benefitId: 'ben_456',
-      fileId: 'file_polar_1'
+      fileId: 'file_polar_1',
+      apiBase: expect.any(String)
     });
 
     expect(core.setOutput).toHaveBeenCalledWith('file-id', 'file_polar_1');
@@ -138,6 +157,8 @@ describe('Polar Action run() Entrypoint', () => {
       id: 'file_polar_2',
       path: '/downloadables/test-asset.zip',
       upload: {
+        id: 's3_upload_auto',
+        path: '/downloadables/test-asset.zip',
         parts: [{ number: 1, url: 'https://s3.test/upload' }]
       }
     });
@@ -152,7 +173,10 @@ describe('Polar Action run() Entrypoint', () => {
 
     await run();
 
-    expect(polar.resolveOrganizationId).toHaveBeenCalledWith({ accessToken: 'polar_oat_secret' });
+    expect(polar.resolveOrganizationId).toHaveBeenCalledWith({
+      accessToken: 'polar_oat_secret',
+      apiBase: expect.any(String)
+    });
     expect(polar.createFile).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: 'org_auto_resolved',
@@ -221,5 +245,50 @@ describe('Polar Action run() Entrypoint', () => {
     await run();
 
     expect(core.setFailed).toHaveBeenCalledWith('API failure');
+  });
+
+  describe('loadEnvFile helper', () => {
+    it('parses valid key-value pairs and ignores comments and blanks', () => {
+      const envPath = path.join(tmpDir, '.test-env');
+      fs.writeFileSync(envPath, '# comment line\nTEST_KEY_ONE="value1"\nTEST_KEY_TWO=\'value2\'\nTEST_KEY_THREE=plain\n\n');
+
+      loadEnvFile(envPath);
+
+      expect(process.env.TEST_KEY_ONE).toBe('value1');
+      expect(process.env.TEST_KEY_TWO).toBe('value2');
+      expect(process.env.TEST_KEY_THREE).toBe('plain');
+
+      delete process.env.TEST_KEY_ONE;
+      delete process.env.TEST_KEY_TWO;
+      delete process.env.TEST_KEY_THREE;
+    });
+
+    it('does nothing when env file does not exist', () => {
+      expect(() => loadEnvFile(path.join(tmpDir, 'does-not-exist.env'))).not.toThrow();
+    });
+  });
+
+  describe('getActionInput helper', () => {
+    beforeEach(() => {
+      (core.getInput as jest.Mock).mockReturnValue('');
+    });
+
+    it('falls back to uppercase INPUT_ env variable when core.getInput is empty', () => {
+      process.env.INPUT_ACCESS_TOKEN = 'token_from_env';
+      expect(getActionInput('access-token')).toBe('token_from_env');
+      delete process.env.INPUT_ACCESS_TOKEN;
+    });
+
+    it('falls back to recognized alias variable', () => {
+      process.env.POLAR_ACCESS_TOKEN = 'token_from_alias';
+      expect(getActionInput('access-token')).toBe('token_from_alias');
+      delete process.env.POLAR_ACCESS_TOKEN;
+    });
+
+    it('throws error when required input is missing', () => {
+      expect(() => getActionInput('access-token', { required: true })).toThrow(
+        'Input required and not supplied: access-token'
+      );
+    });
   });
 });

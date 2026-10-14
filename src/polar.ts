@@ -9,6 +9,7 @@ export interface PolarFilePart {
   url: string;
   chunk_start?: number;
   chunk_end?: number;
+  headers?: Record<string, string>;
 }
 
 export interface PolarFileCreateResponse {
@@ -20,6 +21,8 @@ export interface PolarFileCreateResponse {
   size: number;
   service: string;
   upload: {
+    id: string;
+    path: string;
     parts: PolarFilePart[];
   };
 }
@@ -40,13 +43,24 @@ export interface PolarBenefitResponse {
   };
 }
 
-const POLAR_API_BASE = 'https://api.polar.sh/v1';
+export const POLAR_API_PRODUCTION = 'https://api.polar.sh/v1';
+export const POLAR_API_SANDBOX = 'https://sandbox-api.polar.sh/v1';
+
+export function resolveApiBase(options?: { server?: string; apiBase?: string }): string {
+  if (options?.apiBase && options.apiBase.trim().length > 0) {
+    return options.apiBase.trim().replace(/\/+$/, '');
+  }
+  if (options?.server?.trim().toLowerCase() === 'sandbox') {
+    return POLAR_API_SANDBOX;
+  }
+  return POLAR_API_PRODUCTION;
+}
 
 export async function resolveOrganizationId(options: {
   accessToken: string;
   apiBase?: string;
 }): Promise<string> {
-  const { accessToken, apiBase = POLAR_API_BASE } = options;
+  const { accessToken, apiBase = POLAR_API_PRODUCTION } = options;
   const endpoint = `${apiBase}/organizations`;
 
   const response = await fetch(endpoint, {
@@ -73,11 +87,12 @@ export async function resolveOrganizationId(options: {
 
 export async function createFile(options: {
   accessToken: string;
-  organizationId: string;
+  organizationId?: string;
   fileName: string;
   fileSize: number;
   mimeType?: string;
   apiBase?: string;
+  sha256Base64?: string;
 }): Promise<PolarFileCreateResponse> {
   const {
     accessToken,
@@ -85,26 +100,34 @@ export async function createFile(options: {
     fileName,
     fileSize,
     mimeType = 'application/zip',
-    apiBase = POLAR_API_BASE
+    apiBase = POLAR_API_PRODUCTION,
+    sha256Base64
   } = options;
   const endpoint = `${apiBase}/files`;
 
-  const body = {
-    organization_id: organizationId,
+  const part: Record<string, unknown> = {
+    number: 1,
+    chunk_start: 0,
+    chunk_end: fileSize
+  };
+  if (sha256Base64) {
+    part.checksum_sha256_base64 = sha256Base64;
+  }
+
+  const body: Record<string, unknown> = {
     name: fileName,
     mime_type: mimeType,
     size: fileSize,
     service: 'downloadable',
     upload: {
-      parts: [
-        {
-          number: 1,
-          chunk_start: 0,
-          chunk_end: fileSize
-        }
-      ]
+      parts: [part]
     }
   };
+
+  // Polar API rejects organization_id when an Organization Access Token (polar_oat_*) is used.
+  if (organizationId && !accessToken.startsWith('polar_oat_')) {
+    body.organization_id = organizationId;
+  }
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -128,11 +151,14 @@ export async function uploadPart(options: {
   presignedUrl: string;
   partNumber: number;
   buffer: Buffer | Uint8Array;
+  headers?: Record<string, string>;
+  sha256Base64?: string;
 }): Promise<PolarCompletedPart> {
-  const { presignedUrl, partNumber, buffer } = options;
+  const { presignedUrl, partNumber, buffer, headers = {}, sha256Base64 } = options;
 
   const response = await fetch(presignedUrl, {
     method: 'PUT',
+    headers,
     body: buffer
   });
 
@@ -142,26 +168,31 @@ export async function uploadPart(options: {
   }
 
   const rawEtag = response.headers.get('etag') || response.headers.get('ETag') || `"${partNumber}"`;
-  const cleanEtag = rawEtag.replace(/^"+|"+$/g, '');
 
-  return {
+  const completed: PolarCompletedPart = {
     number: partNumber,
-    checksum_etag: cleanEtag
+    checksum_etag: rawEtag
   };
+  if (sha256Base64) {
+    completed.checksum_sha256_base64 = sha256Base64;
+  }
+
+  return completed;
 }
 
 export async function completeFileUpload(options: {
   accessToken: string;
   fileId: string;
+  uploadId: string;
   filePath: string;
   parts: PolarCompletedPart[];
   apiBase?: string;
 }): Promise<PolarFileCreateResponse> {
-  const { accessToken, fileId, filePath, parts, apiBase = POLAR_API_BASE } = options;
+  const { accessToken, fileId, uploadId, filePath, parts, apiBase = POLAR_API_PRODUCTION } = options;
   const endpoint = `${apiBase}/files/${encodeURIComponent(fileId)}/uploaded`;
 
   const body = {
-    id: fileId,
+    id: uploadId,
     path: filePath,
     parts
   };
@@ -190,7 +221,7 @@ export async function attachFileToBenefit(options: {
   fileId: string;
   apiBase?: string;
 }): Promise<PolarBenefitResponse> {
-  const { accessToken, benefitId, fileId, apiBase = POLAR_API_BASE } = options;
+  const { accessToken, benefitId, fileId, apiBase = POLAR_API_PRODUCTION } = options;
 
   // 1. Fetch current benefit to retain existing attached files
   const getEndpoint = `${apiBase}/benefits/${encodeURIComponent(benefitId)}`;

@@ -1,4 +1,7 @@
 import {
+  POLAR_API_PRODUCTION,
+  POLAR_API_SANDBOX,
+  resolveApiBase,
   resolveOrganizationId,
   createFile,
   uploadPart,
@@ -26,6 +29,25 @@ describe('Polar API Client', () => {
   afterEach(() => {
     global.fetch = originalFetch;
     jest.restoreAllMocks();
+  });
+
+  describe('resolveApiBase', () => {
+    it('defaults to production API URL', () => {
+      expect(resolveApiBase()).toBe(POLAR_API_PRODUCTION);
+      expect(resolveApiBase({})).toBe(POLAR_API_PRODUCTION);
+      expect(resolveApiBase({ server: 'production' })).toBe(POLAR_API_PRODUCTION);
+    });
+
+    it('returns sandbox API URL when server is sandbox (case insensitive)', () => {
+      expect(resolveApiBase({ server: 'sandbox' })).toBe(POLAR_API_SANDBOX);
+      expect(resolveApiBase({ server: 'SANDBOX' })).toBe(POLAR_API_SANDBOX);
+    });
+
+    it('returns custom apiBase and trims trailing slashes', () => {
+      expect(resolveApiBase({ apiBase: 'https://custom.api.test/v1/' })).toBe(
+        'https://custom.api.test/v1'
+      );
+    });
   });
 
   describe('resolveOrganizationId', () => {
@@ -76,7 +98,7 @@ describe('Polar API Client', () => {
   });
 
   describe('createFile', () => {
-    it('creates file record with default mimeType', async () => {
+    it('creates file record with default mimeType and includes organization_id for non-OAT tokens', async () => {
       const mockResponse = {
         id: 'file_abc',
         organization_id: 'org_123',
@@ -104,22 +126,50 @@ describe('Polar API Client', () => {
       });
 
       expect(result).toEqual(mockResponse);
-      expect(global.fetch).toHaveBeenCalledWith(
-        'https://api.polar.sh/v1/files',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({
-            organization_id: 'org_123',
-            name: 'release.zip',
-            mime_type: 'application/zip',
-            size: 2048,
-            service: 'downloadable',
-            upload: {
-              parts: [{ number: 1, chunk_start: 0, chunk_end: 2048 }]
-            }
-          })
-        })
-      );
+      const fetchCall = (global.fetch as jest.Mock).mock.calls[0];
+      expect(fetchCall[0]).toBe('https://api.polar.sh/v1/files');
+      const parsedBody = JSON.parse(fetchCall[1].body as string);
+      expect(parsedBody).toEqual({
+        name: 'release.zip',
+        mime_type: 'application/zip',
+        size: 2048,
+        service: 'downloadable',
+        upload: {
+          parts: [{ number: 1, chunk_start: 0, chunk_end: 2048 }]
+        },
+        organization_id: 'org_123'
+      });
+    });
+
+    it('omits organization_id when access token is an Organization Access Token (polar_oat_*)', async () => {
+      const mockResponse = {
+        id: 'file_oat',
+        organization_id: 'org_auto',
+        name: 'release.zip',
+        path: '/downloadables/release.zip',
+        mime_type: 'application/zip',
+        size: 1024,
+        service: 'downloadable',
+        upload: { parts: [{ number: 1, url: 'https://s3.test/oat' }] }
+      };
+
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => mockResponse
+      } as Response);
+
+      await createFile({
+        accessToken: 'polar_oat_secret',
+        organizationId: 'org_auto',
+        fileName: 'release.zip',
+        fileSize: 1024
+      });
+
+      const fetchCall = (global.fetch as jest.Mock).mock.calls[0];
+      const parsedBody = JSON.parse(fetchCall[1].body as string);
+      expect(parsedBody.organization_id).toBeUndefined();
+      expect(parsedBody.name).toBe('release.zip');
     });
 
     it('throws error when file creation HTTP status is not ok', async () => {
@@ -159,7 +209,7 @@ describe('Polar API Client', () => {
 
       expect(result).toEqual({
         number: 1,
-        checksum_etag: 'etag-polar-123'
+        checksum_etag: '"etag-polar-123"'
       });
     });
 
@@ -180,7 +230,7 @@ describe('Polar API Client', () => {
 
       expect(result).toEqual({
         number: 2,
-        checksum_etag: 'ETAG-UPPER'
+        checksum_etag: '"ETAG-UPPER"'
       });
     });
 
@@ -201,7 +251,7 @@ describe('Polar API Client', () => {
 
       expect(result).toEqual({
         number: 3,
-        checksum_etag: '3'
+        checksum_etag: '"3"'
       });
     });
 
@@ -244,6 +294,7 @@ describe('Polar API Client', () => {
       const result = await completeFileUpload({
         accessToken: 'tok',
         fileId: 'file_1',
+        uploadId: 'upload_s3_123',
         filePath: '/downloadables/release.zip',
         parts: [{ number: 1, checksum_etag: 'etag1' }]
       });
@@ -255,6 +306,9 @@ describe('Polar API Client', () => {
           method: 'POST'
         })
       );
+      const fetchCall = (global.fetch as jest.Mock).mock.calls[0];
+      const parsedBody = JSON.parse(fetchCall[1].body as string);
+      expect(parsedBody.id).toBe('upload_s3_123');
     });
 
     it('throws error when complete request fails', async () => {
@@ -268,6 +322,7 @@ describe('Polar API Client', () => {
         completeFileUpload({
           accessToken: 'tok',
           fileId: 'f',
+          uploadId: 'u',
           filePath: '/p',
           parts: [],
           apiBase: 'https://api.test'
